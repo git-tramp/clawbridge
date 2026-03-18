@@ -38,11 +38,15 @@ class Bridge:
     """Bridge 主类"""
 
     def __init__(self, run_dir: str, skill_name: str, args: str = "",
-                 model: str = None, async_mode: bool = False):
+                 model: str = None, backend: str = None, async_mode: bool = False):
         self.run_dir = Path(run_dir)
         self.skill_name = skill_name
         self.args = args
-        self.model = model or config.DEFAULT_MODEL
+        self.backend = backend or config.DEFAULT_BACKEND
+        # 修复: 使用 is not None 而非 or，避免空字符串被误替换
+        self.model = model if model is not None else (
+            config.DEFAULT_GEMINI_MODEL if self.backend == "gemini" else config.DEFAULT_MODEL
+        )
         self.async_mode = async_mode
 
         self.state_file = self.run_dir / "state.json"
@@ -174,8 +178,8 @@ class Bridge:
                 "run_dir": str(self.run_dir)
             })
 
-            # 调用 deliver 命令
-            deliver_cmd = f"openclaw agent --agent {agent_id} --message '{message}' --deliver"
+            # 调用 deliver 命令 (使用正确的参数顺序)
+            deliver_cmd = f"openclaw agent --deliver --agent-id {agent_id} --message '{message}'"
             os.system(deliver_cmd)
         except Exception as e:
             self._output(f"[BRIDGE:WARN] Deliver failed: {e}")
@@ -241,11 +245,16 @@ class Bridge:
         self._check_security(prompt)
         self._check_required_files()
 
-        # 调用 SDK
+        if self.backend == "gemini":
+            self._run_gemini(prompt)
+        else:
+            self._run_claude(prompt)
+
+    def _run_claude(self, prompt: str):
+        """使用 Claude SDK 执行"""
         SDK = self._load_sdk()
         from claude_agent_sdk.types import ClaudeAgentOptions
 
-        # 构建查询参数
         query_params = {
             "prompt": prompt,
             "options": ClaudeAgentOptions(
@@ -255,20 +264,18 @@ class Bridge:
         }
 
         if self.async_mode:
-            # 异步模式：使用 stream 参数
             query_params["stream"] = True
 
         try:
             result = SDK.query(**query_params)
-
-            # 处理结果
+            
             if self.async_mode:
                 # 异步模式：处理流式输出
                 for event in result:
                     if hasattr(event, "type"):
                         if event.type == "content_block_delta":
                             if hasattr(event, "delta") and hasattr(event.delta, "text"):
-                                print(event.delta.text, end="")
+                                self._output(event.delta.text) # 保持输出一致性
                         elif event.type == "message_stop":
                             break
             else:
@@ -280,16 +287,78 @@ class Bridge:
                             output_text += block.text
                     self._output(output_text)
 
-            # 完成
-            self._write_state(config.State.DONE, {
-                "completed_at": datetime.now().isoformat()
-            })
+            self._write_state(config.State.DONE, {"completed_at": datetime.now().isoformat()})
             self._output_protocol(config.PROTOCOL_DONE, "Execution completed successfully")
+            self._deliver_to_agent(self._read_state())
+        except Exception as e:
+            self._handle_error(e)
 
-            # 通知
-            state_data = self._read_state()
-            self._deliver_to_agent(state_data)
+    def _run_gemini(self, prompt: str):
+        """使用 Gemini CLI 执行"""
+        import subprocess
 
+        cmd = [
+            config.GEMINI_PATH,
+            "--prompt", prompt,
+            "--model", self.model,
+            "--approval-mode", config.GEMINI_APPROVAL_MODE,
+            "--output-format", "stream-json"
+        ]
+
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            for line in self.process.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    event = json.loads(line)
+                    event_type = event.get("type")
+
+                    if event_type == "message":
+                        role = event.get("role")
+                        content = event.get("content", "")
+                        # 处理 assistant 和 system 角色的消息
+                        if content and role in ("assistant", "system"):
+                            self._output(content)
+                    
+                    elif event_type == "tool_call":
+                        tool_name = event.get("tool_name")
+                        tool_input = event.get("tool_input", {})
+                        
+                        # 拦截 ask_user (Gemini 对应的工具名)
+                        if tool_name == "ask_user":
+                            raise AskUserQuestionInterceptedError({
+                                "tool": "AskUserQuestion", # 映射到 OpenClaw 标准
+                                "question": tool_input.get("question", ""),
+                                "tool_input": tool_input
+                            })
+
+                except json.JSONDecodeError:
+                    # 可能是非 JSON 输出（例如加载日志）
+                    if not line.startswith("{"):
+                        self._output(f"[GEMINI:LOG] {line}")
+
+            return_code = self.process.wait()
+
+            if return_code == 0:
+                self._write_state(config.State.DONE, {"completed_at": datetime.now().isoformat()})
+                self._output_protocol(config.PROTOCOL_DONE)
+                self._deliver_to_agent(self._read_state())
+            else:
+                raise BridgeError(f"Gemini CLI exited with code {return_code}")
+
+        except AskUserQuestionInterceptedError:
+            # 重新抛出以由 run() 处理
+            raise
         except Exception as e:
             self._handle_error(e)
 
@@ -304,7 +373,8 @@ class Bridge:
              "--run-dir", str(self.run_dir),
              "--skill", self.skill_name,
              "--args", self.args,
-             "--model", self.model],
+             "--model", self.model,
+             "--backend", self.backend],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -330,6 +400,9 @@ class Bridge:
         else:
             self._write_state(config.State.ERROR, {"exit_code": return_code})
             self._output_protocol(config.PROTOCOL_ERROR, f"Exit code: {return_code}")
+        
+        # 确保异步模式结束时也进行通知
+        self._deliver_to_agent(self._read_state())
 
     def _handle_error(self, error: Exception):
         """统一错误处理"""
@@ -388,6 +461,7 @@ def main():
     parser.add_argument("--skill", required=True, help="Skill name")
     parser.add_argument("--args", default="", help="Skill arguments")
     parser.add_argument("--model", default=None, help="Model to use")
+    parser.add_argument("--backend", default=None, choices=["claude", "gemini"], help="Backend to use")
     parser.add_argument("--async", dest="async_mode", action="store_true", help="Async mode")
 
     args = parser.parse_args()
@@ -397,6 +471,7 @@ def main():
         skill_name=args.skill,
         args=args.args,
         model=args.model,
+        backend=args.backend,
         async_mode=args.async_mode
     )
 

@@ -20,11 +20,22 @@ BRIDGE_WORK_DIR = OPENCLAW_ROOT / "workspace" / "projects" / "bridge" / "runs"
 CLAUDE_CONFIG_DIR = OPENCLAW_ROOT / ".claude"
 
 # ==================== 模型配置 ====================
+# 默认后端 (claude | gemini)
+DEFAULT_BACKEND = os.environ.get("BRIDGE_BACKEND", "claude")
+
 # 默认模型
 DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
+DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "auto-gemini-3")
 
 # 支持的模型列表
-SUPPORTED_MODELS = ["sonnet", "opus", "haiku"]
+SUPPORTED_MODELS = ["sonnet", "opus", "haiku", "auto-gemini-3", "gemini-2.0-flash-exp"]
+
+# ==================== Gemini 配置 ====================
+# Gemini CLI 可执行文件路径
+GEMINI_PATH = os.environ.get("GEMINI_PATH", "gemini")
+
+# Gemini 默认审批模式 (default | auto_edit | yolo | plan)
+GEMINI_APPROVAL_MODE = os.environ.get("GEMINI_APPROVAL_MODE", "yolo")
 
 # ==================== 超时配置 ====================
 # 执行超时（秒）

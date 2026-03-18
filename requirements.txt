@@ -1,0 +1,7 @@
+# OpenClaw Bridge Dependencies
+
+# Claude SDK (required for Claude backend)
+claude-agent-sdk
+
+# Optional: for enhanced JSON handling
+# requests

@@ -18,6 +18,7 @@ RUN_DIR="${OPENCLAW_BRIDGE_RUN_DIR}"
 SKILL_NAME="${OPENCLAW_BRIDGE_SKILL}"
 SKILL_ARGS="${OPENCLAW_BRIDGE_ARGS}"
 MODEL="${OPENCLAW_BRIDGE_MODEL:-sonnet}"
+BACKEND="${OPENCLAW_BRIDGE_BACKEND:-claude}"
 ASYNC_MODE="${OPENCLAW_BRIDGE_ASYNC:-false}"
 
 # 检查虚拟环境
@@ -34,6 +35,7 @@ if [ -f "${VENV_PATH}/bin/activate" ]; then
         --skill="${SKILL_NAME}" \
         --args="${SKILL_ARGS}" \
         --model="${MODEL}" \
+        --backend="${BACKEND}" \
         $([ "${ASYNC_MODE}" = "true" ] && echo "--async")
 else
     # 没有虚拟环境，使用系统 Python
@@ -43,5 +45,6 @@ else
         --skill="${SKILL_NAME}" \
         --args="${SKILL_ARGS}" \
         --model="${MODEL}" \
+        --backend="${BACKEND}" \
         $([ "${ASYNC_MODE}" = "true" ] && echo "--async")
 fi

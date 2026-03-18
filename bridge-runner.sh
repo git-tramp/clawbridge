@@ -68,28 +68,41 @@ trap cleanup EXIT
 
 # ==================== 辅助函数 ====================
 
-# 原子写入状态文件（tmp + rename）
+# 原子写入状态文件（tmp + rename）- 使用 python3 安全生成 JSON
 write_state() {
     local state="$1"
     local extra="$2"
     local state_file="${RUN_DIR}/state.json"
-
-    local timestamp
-    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
     local pid="${CLEANUP_PID:-$$}"
-
-    # 构建 JSON
-    local json="{\"state\":\"${state}\",\"skill\":\"${SKILL_NAME}\",\"args\":\"${SKILL_ARGS}\",\"model\":\"${MODEL}\",\"run_dir\":\"${RUN_DIR}\",\"timestamp\":\"${timestamp}\",\"pid\":${pid}"
-
-    if [ -n "${extra}" ]; then
-        json="${json},\"extra\":\"${extra}\""
-    fi
-    json="${json}}"
 
     # 写入临时文件
     local tmp_file="${state_file}.tmp"
-    echo "${json}" > "${tmp_file}"
+
+    # 使用 python3 安全地生成 JSON，正确处理特殊字符
+    python3 -c "
+import json
+from datetime import datetime
+
+state = '''$state'''
+skill = '''$SKILL_NAME'''
+args_val = '''$SKILL_ARGS'''
+model = '''$MODEL'''
+run_dir = '''$RUN_DIR'''
+extra = '''$extra'''
+
+data = {
+    'state': state,
+    'skill': skill,
+    'args': args_val,
+    'model': model,
+    'run_dir': run_dir,
+    'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'pid': $pid
+}
+if extra:
+    data['extra'] = extra
+print(json.dumps(data))
+" > "${tmp_file}"
 
     # 原子重命名
     mv "${tmp_file}" "${state_file}"
@@ -154,8 +167,9 @@ run_watchdog() {
 # 安全规则检查
 check_security_rules() {
     local skill_name="$1"
-    # 默认指向 workspace/skills
-    local skills_dir="${OPENCLAW_SKILLS_DIR:-${SCRIPT_DIR}/../../.openclaw/workspace/skills}"
+    # 使用 OPENCLAW_ROOT 环境变量，兼容自定义路径
+    local openclaw_root="${OPENCLAW_ROOT:-${SCRIPT_DIR}/../../.openclaw}"
+    local skills_dir="${OPENCLAW_SKILLS_DIR:-${openclaw_root}/workspace/skills}"
     local skill_dir="${skills_dir}/${skill_name}"
 
     # 检查 SKILL.md 是否存在
@@ -203,6 +217,7 @@ SKILL_ARGS=""
 TIMEOUT="${DEFAULT_TIMEOUT}"
 HEARTBEAT="${DEFAULT_HEARTBEAT}"
 MODEL="sonnet"
+BACKEND="claude"
 ASYNC_MODE=false
 
 while [ $# -gt 0 ]; do
@@ -217,6 +232,10 @@ while [ $# -gt 0 ]; do
             ;;
         --model)
             MODEL="$2"
+            shift 2
+            ;;
+        --backend)
+            BACKEND="$2"
             shift 2
             ;;
         --async)
@@ -285,6 +304,7 @@ export OPENCLAW_BRIDGE_RUN_DIR="${RUN_DIR}"
 export OPENCLAW_BRIDGE_SKILL="${SKILL_NAME}"
 export OPENCLAW_BRIDGE_ARGS="${SKILL_ARGS}"
 export OPENCLAW_BRIDGE_MODEL="${MODEL}"
+export OPENCLAW_BRIDGE_BACKEND="${BACKEND}"
 export OPENCLAW_BRIDGE_ASYNC="${ASYNC_MODE}"
 
 # 启动桥接进程
